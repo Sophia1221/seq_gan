@@ -26,6 +26,9 @@ parser.add_argument('--cuda', action='store', default=None, type=int)
 opt = parser.parse_args()
 print(opt)
 
+# 定义 device：如果有 GPU 并且 opt.cuda 被设置，则使用 GPU；否则使用 CPU
+device = torch.device('cuda' if torch.cuda.is_available() and opt.cuda else 'cpu')
+
 # Basic Training Paramters
 SEED = 88
 BATCH_SIZE = 64
@@ -37,9 +40,6 @@ EVAL_FILE = 'eval.data'
 VOCAB_SIZE = 5000
 PRE_EPOCH_NUM = 120
 
-if opt.cuda is not None and opt.cuda >= 0:
-    torch.cuda.set_device(opt.cuda)
-    opt.cuda = True
 
 # Genrator Parameters
 g_emb_dim = 32
@@ -72,9 +72,7 @@ def train_epoch(model, data_iter, criterion, optimizer):
     for (data, target) in data_iter:#tqdm(
         #data_iter, mininterval=2, desc=' - Training', leave=False):
         data = Variable(data)
-        target = Variable(target)
-        if opt.cuda:
-            data, target = data.cuda(), target.cuda()
+        target = Variable(target).to(device)
         target = target.contiguous().view(-1)
         pred = model.forward(data)
         loss = criterion(pred, target)
@@ -93,9 +91,7 @@ def eval_epoch(model, data_iter, criterion):
         for (data, target) in data_iter:#tqdm(
             #data_iter, mininterval=2, desc=' - Training', leave=False):
             data = Variable(data)
-            target = Variable(target)
-            if opt.cuda:
-                data, target = data.cuda(), target.cuda()
+            target = Variable(target).to(device)
             target = target.contiguous().view(-1)
             pred = model.forward(data)
             loss = criterion(pred, target)
@@ -120,14 +116,9 @@ class GANLoss(nn.Module):
         """
         N = target.size(0)
         C = prob.size(1)
-        one_hot = torch.zeros((N, C))
-        if prob.is_cuda:
-            one_hot = one_hot.cuda()
+        one_hot = torch.zeros((N, C)).to(device)
         one_hot.scatter_(1, target.data.view((-1,1)), 1)
-        one_hot = one_hot.type(torch.ByteTensor)
-        one_hot = Variable(one_hot)
-        if prob.is_cuda:
-            one_hot = one_hot.cuda()
+        one_hot = one_hot.type(torch.ByteTensor).to(device)
         loss = torch.masked_select(prob, one_hot)
         loss = loss * reward
         loss =  -torch.sum(loss)
@@ -139,13 +130,14 @@ def main():
     np.random.seed(SEED)
 
     # Define Networks
-    generator = Generator(VOCAB_SIZE, g_emb_dim, g_hidden_dim, opt.cuda)
+    generator = Generator(VOCAB_SIZE, g_emb_dim, g_hidden_dim, device)
     discriminator = Discriminator(d_num_class, VOCAB_SIZE, d_emb_dim, d_filter_sizes, d_num_filters, d_dropout)
-    target_lstm = TargetLSTM(VOCAB_SIZE, g_emb_dim, g_hidden_dim, opt.cuda)
-    if opt.cuda:
-        generator = generator.cuda()
-        discriminator = discriminator.cuda()
-        target_lstm = target_lstm.cuda()
+    target_lstm = TargetLSTM(VOCAB_SIZE, g_emb_dim, g_hidden_dim, device)
+    
+    generator = generator.to(device)
+    discriminator = discriminator.to(device)
+    target_lstm = target_lstm.to(device)
+
     # Generate toy data using target lstm
     print('Generating data ...')
     generate_samples(target_lstm, BATCH_SIZE, GENERATED_NUM, POSITIVE_FILE)
@@ -156,8 +148,6 @@ def main():
     # Pretrain Generator using MLE
     gen_criterion = nn.NLLLoss(reduction='sum')
     gen_optimizer = optim.Adam(generator.parameters())
-    if opt.cuda:
-        gen_criterion = gen_criterion.cuda()
     print('Pretrain with MLE ...')
     for epoch in range(PRE_EPOCH_NUM):
         loss = train_epoch(generator, gen_data_iter, gen_criterion, gen_optimizer)
@@ -170,8 +160,6 @@ def main():
     # Pretrain Discriminator
     dis_criterion = nn.NLLLoss(reduction='sum')
     dis_optimizer = optim.Adam(discriminator.parameters())
-    if opt.cuda:
-        dis_criterion = dis_criterion.cuda()
     print('Pretrain Discriminator ...')
     for epoch in range(5):
         generate_samples(generator, BATCH_SIZE, GENERATED_NUM, NEGATIVE_FILE)
@@ -185,31 +173,21 @@ def main():
     print('Start Adeversatial Training...\n')
     gen_gan_loss = GANLoss()
     gen_gan_optm = optim.Adam(generator.parameters())
-    if opt.cuda:
-        gen_gan_loss = gen_gan_loss.cuda()
-    gen_criterion = nn.NLLLoss(reduction='sum')
-    if opt.cuda:
-        gen_criterion = gen_criterion.cuda()
-    dis_criterion = nn.NLLLoss(reduction='sum')
+    gen_criterion = nn.NLLLoss(reduction='sum').to(device)
+    dis_criterion = nn.NLLLoss(reduction='sum').to(device)
     dis_optimizer = optim.Adam(discriminator.parameters())
-    if opt.cuda:
-        dis_criterion = dis_criterion.cuda()
     for total_batch in range(TOTAL_BATCH):
         ## Train the generator for one step
         for it in range(1):
             samples = generator.sample(BATCH_SIZE, g_sequence_len)
             # construct the input to the genrator, add zeros before samples and delete the last column
-            zeros = torch.zeros((BATCH_SIZE, 1)).type(torch.LongTensor)
-            if samples.is_cuda:
-                zeros = zeros.cuda()
+            zeros = torch.zeros((BATCH_SIZE, 1)).type(torch.LongTensor).to(device)
             inputs = Variable(torch.cat([zeros, samples.data], dim = 1)[:, :-1].contiguous())
             targets = Variable(samples.data).contiguous().view((-1,))
             # calculate the reward
             rewards = rollout.get_reward(samples, 16, discriminator)
-            rewards = Variable(torch.Tensor(rewards))
+            rewards = Variable(torch.Tensor(rewards)).to(device)
             rewards = torch.exp(rewards).contiguous().view((-1,))
-            if opt.cuda:
-                rewards = rewards.cuda()
             prob = generator.forward(inputs)
             loss = gen_gan_loss(prob, targets, rewards)
             gen_gan_optm.zero_grad()

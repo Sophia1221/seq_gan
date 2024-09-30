@@ -12,12 +12,12 @@ from torch.autograd import Variable
 
 class TargetLSTM(nn.Module):
     """Target Lstm """
-    def __init__(self, num_emb, emb_dim, hidden_dim, use_cuda):
+    def __init__(self, num_emb, emb_dim, hidden_dim, device):
         super(TargetLSTM, self).__init__()
         self.num_emb = num_emb
         self.emb_dim = emb_dim
         self.hidden_dim = hidden_dim
-        self.use_cuda = use_cuda
+        self.device = device
         self.emb = nn.Embedding(num_emb, emb_dim)
         self.lstm = nn.LSTM(emb_dim, hidden_dim, batch_first=True)
         self.lin = nn.Linear(hidden_dim, num_emb)
@@ -49,10 +49,8 @@ class TargetLSTM(nn.Module):
 
 
     def init_hidden(self, batch_size):
-        h = Variable(torch.zeros((1, batch_size, self.hidden_dim)))
-        c = Variable(torch.zeros((1, batch_size, self.hidden_dim)))
-        if self.use_cuda:
-            h, c = h.cuda(), c.cuda()
+        h = Variable(torch.zeros((1, batch_size, self.hidden_dim), device=self.device))
+        c = Variable(torch.zeros((1, batch_size, self.hidden_dim), device=self.device))
         return h, c
 
     def init_params(self):
@@ -62,14 +60,12 @@ class TargetLSTM(nn.Module):
     def sample(self, batch_size, seq_len):
         res = []
         with torch.no_grad():
-            x = Variable(torch.zeros((batch_size, 1)).long())
-            if self.use_cuda:
-                x = x.cuda()
+            x = Variable(torch.zeros((batch_size, 1), device=self.device).long())
             h, c = self.init_hidden(batch_size)
             samples = []
             for i in range(seq_len):
                 output, h, c = self.step(x, h, c)
-                x = output.multinomial(1)
+                x = output.multinomial(1)  # Sample from the distribution
                 samples.append(x)
             output = torch.cat(samples, dim=1)
             return output
